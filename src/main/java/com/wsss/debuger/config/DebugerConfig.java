@@ -18,12 +18,6 @@ import java.util.Set;
  * 负责注册DebugerBeanPostProcessor并启用拦截器功能
  */
 @Configuration
-@ConditionalOnProperty(
-        prefix = "debuger",
-        name = "enabled",
-        havingValue = "true",
-        matchIfMissing = true
-)
 public class DebugerConfig {
 
     private static final Logger logger = LoggerFactory.getLogger(DebugerConfig.class);
@@ -31,6 +25,8 @@ public class DebugerConfig {
     @Value("${wsss.debuger.class.names:}")
     private List<String> classNames;
     private Set<Class> classs;
+    @Value("${wsss.debuger.bean.names:}")
+    private Set<String> beanNames;
 
 
     @Value("${wsss.debuger.proxy.enable:false}")
@@ -62,6 +58,10 @@ public class DebugerConfig {
         }
 
         return classs;
+    }
+
+    public Set<String> getBeanNames() {
+        return beanNames;
     }
 
     public boolean isEnable() {

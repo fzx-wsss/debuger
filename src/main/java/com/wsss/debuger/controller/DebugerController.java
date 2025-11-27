@@ -1,6 +1,8 @@
 package com.wsss.debuger.controller;
 
 import com.wsss.debuger.config.DebugerConfig;
+import com.wsss.debuger.model.DebugRequest;
+import com.wsss.debuger.model.DebugResponse;
 import com.wsss.debuger.utils.ProtoStuffUtil;
 
 import org.apache.commons.lang3.StringUtils;
@@ -8,18 +10,16 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.BeansException;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationContextAware;
-import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import java.io.IOException;
 import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
-import java.nio.charset.StandardCharsets;
 import javax.servlet.http.HttpServletRequest;
 import java.io.ByteArrayOutputStream;
-import java.io.IOException;
 import java.io.InputStream;
 import java.lang.reflect.Method;
 import java.util.Arrays;
@@ -28,6 +28,7 @@ import java.util.Arrays;
  * Debuger HTTP接口控制器
  * 用于接收远程调试请求，调用本地方法并返回结果
  */
+@ConditionalOnProperty(name = "wsss.debuger.mode", havingValue = "server", matchIfMissing = true)
 @RestController
 @RequestMapping("/debuger")
 public class DebugerController implements ApplicationContextAware {
@@ -47,78 +48,105 @@ public class DebugerController implements ApplicationContextAware {
     /**
      * 处理调试请求的接口
      * @param request HTTP请求对象
-     * @param authorization 授权信息（密码）
-     * @param beanName 要调用的bean名称
-     * @param methodName 要调用的方法名
-     * @return 方法调用结果的序列化数据
+     * @return 方法调用结果的序列化数据（DebugResponse对象）
      */
     @PostMapping("/invoke")
-    public ResponseEntity<byte[]> invoke(HttpServletRequest request,
-                                        @RequestHeader(value = "Authorization", required = false) String authorization,
-                                        @RequestHeader(value = "X-Bean-Name", required = false) String beanName,
-                                        @RequestHeader(value = "X-Method-Name", required = false) String methodName) {
+    public ResponseEntity<byte[]> invoke(HttpServletRequest request) {
         
-        // 1. 密码校验
-        if (!validatePassword(authorization)) {
-            logger.error("密码校验失败，拒绝请求");
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-                    .body("密码校验失败，请提供正确的授权信息".getBytes(StandardCharsets.UTF_8));
+        // 1. 读取并反序列化请求数据
+        byte[] requestData;
+        try {
+            requestData = readRequestBody(request);
+        } catch (IOException e) {
+            logger.error("读取请求体失败", e);
+            DebugResponse response = new DebugResponse("读取请求体失败: " + e.getMessage(), e.getClass().getName());
+            return ResponseEntity.ok(ProtoStuffUtil.serialize(response));
         }
         
-        // 2. 检查必要的参数
+        if (requestData == null || requestData.length == 0) {
+            logger.error("请求体为空");
+            DebugResponse response = new DebugResponse("请求体为空", null);
+            return ResponseEntity.ok(ProtoStuffUtil.serialize(response));
+        }
+        
+        DebugRequest debugRequest;
+        try {
+            // 2. 反序列化为DebugRequest对象
+            debugRequest = ProtoStuffUtil.deserialize(requestData, DebugRequest.class);
+        } catch (Exception e) {
+            logger.error("反序列化请求数据失败", e);
+            DebugResponse response = new DebugResponse("反序列化请求数据失败: " + e.getMessage(), e.getClass().getName());
+            return ResponseEntity.ok(ProtoStuffUtil.serialize(response));
+        }
+        
+        // 3. 密码校验
+        if (!debugerConfig.getPassword().equals(debugRequest.getPassword())) {
+            logger.error("密码校验失败，拒绝请求");
+            DebugResponse response = new DebugResponse("密码校验失败，请提供正确的授权信息", null);
+            return ResponseEntity.ok(ProtoStuffUtil.serialize(response));
+        }
+
+        
+        // 4. 检查必要的参数
+        String beanName = debugRequest.getBeanName();
+        String methodName = debugRequest.getMethodName();
         if (StringUtils.isEmpty(beanName) || StringUtils.isEmpty(methodName)) {
             logger.error("缺少必要的参数: beanName={}, methodName={}", beanName, methodName);
-            return ResponseEntity.badRequest()
-                    .body("缺少必要的参数，请提供beanName和methodName".getBytes(StandardCharsets.UTF_8));
+            DebugResponse response = new DebugResponse("缺少必要的参数，请提供beanName和methodName", null);
+            return ResponseEntity.badRequest().body(ProtoStuffUtil.serialize(response));
         }
         
         try {
-            // 3. 获取请求参数
-            byte[] requestData = readRequestBody(request);
-            Object[] args = null;
-            if (requestData != null && requestData.length > 0) {
-                args = ProtoStuffUtil.deserialize(requestData, Object[].class);
-            }
+            // 5. 获取请求参数
+            Object[] args = debugRequest.getArguments();
             
-            // 4. 从Spring容器获取bean
+            // 6. 从Spring容器获取bean
             Object targetBean = getBeanByName(beanName);
             if (targetBean == null) {
                 logger.error("未找到指定的bean: {}", beanName);
-                return ResponseEntity.status(HttpStatus.NOT_FOUND)
-                        .body(("未找到指定的bean: " + beanName).getBytes(StandardCharsets.UTF_8));
+                DebugResponse response = new DebugResponse("未找到指定的bean: " + beanName, null);
+                return ResponseEntity.ok(ProtoStuffUtil.serialize(response));
             }
             
-            // 5. 查找并调用方法
-            logger.info("准备调用目标方法: beanName={}, methodName={}, 参数类型={}", 
-                    beanName, methodName, Arrays.stream(args).map(arg -> arg != null ? arg.getClass().getName() : "null").toArray());
-            Object result = invokeMethod(targetBean, methodName, args);
-            logger.info("方法调用完成: 返回类型={}, 是否为null={}", 
-                    result != null ? result.getClass().getName() : "null", result == null);
+            // 7. 记录方法调用信息
+            logger.info("准备调用目标方法: beanName={}, methodName={}, 参数数量={}", 
+                    beanName, methodName, args != null ? args.length : 0);
             
-            // 6. 序列化结果并返回
-            return ResponseEntity.ok(ProtoStuffUtil.serialize(result));
+            // 8. 记录执行时间开始
+            long startTime = System.currentTimeMillis();
+            
+            // 9. 查找并调用方法
+            Object result = invokeMethod(targetBean, methodName, args);
+            
+            // 10. 计算执行时间
+            long executionTime = System.currentTimeMillis() - startTime;
+            
+            // 11. 构建成功响应
+            DebugResponse response = new DebugResponse();
+            response.setSuccess(true);
+            response.setResult(result);
+            response.setExecutionTime(executionTime);
+            
+            logger.info("方法调用完成: 返回类型={}, 执行时间={}ms", 
+                    result != null ? result.getClass().getName() : "null", executionTime);
+            
+            // 12. 序列化响应并返回
+            return ResponseEntity.ok(ProtoStuffUtil.serialize(response));
             
         } catch (Exception e) {
             logger.error("处理调试请求异常: beanName={}, methodName={}", beanName, methodName, e);
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(("处理调试请求异常: " + e.getMessage()).getBytes(StandardCharsets.UTF_8));
+            
+            // 构建错误响应
+            DebugResponse response = new DebugResponse();
+            response.setSuccess(false);
+            response.setErrorMessage(e.getMessage());
+            response.setExceptionClass(e.getClass().getName());
+            
+            return ResponseEntity.ok(ProtoStuffUtil.serialize(response));
         }
     }
     
-    /**
-     * 校验密码
-     * @param authorization 授权信息
-     * @return 是否校验通过
-     */
-    private boolean validatePassword(String authorization) {
-        if (authorization == null
-                || !authorization.startsWith("Bearer ")
-                || StringUtils.isEmpty(debugerConfig.getPassword())) {
-            return false;
-        }
-        String password = authorization.substring(7);
-        return debugerConfig.getPassword().equals(password);
-    }
+    // 密码校验已移至方法内部实现，不再需要单独的validatePassword方法
     
     /**
      * 读取请求体数据

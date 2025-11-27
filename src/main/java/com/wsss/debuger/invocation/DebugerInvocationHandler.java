@@ -1,6 +1,8 @@
 package com.wsss.debuger.invocation;
 
 import com.wsss.debuger.config.DebugerConfig;
+import com.wsss.debuger.model.DebugRequest;
+import com.wsss.debuger.model.DebugResponse;
 import com.wsss.debuger.utils.ProtoStuffUtil;
 import org.aopalliance.intercept.MethodInterceptor;
 import org.aopalliance.intercept.MethodInvocation;
@@ -35,11 +37,9 @@ public class DebugerInvocationHandler implements MethodInterceptor {
      * 发送HTTP POST请求
      * @param url 请求地址
      * @param data 请求数据
-     * @param password 认证密码
-     * @param methodName 调用的方法名
      * @return 响应数据
      */
-    private byte[] sendHttpRequest(String url, byte[] data, String password, String methodName) {
+    private byte[] sendHttpRequest(String url, byte[] data) {
         try {
             java.net.URL requestUrl = new java.net.URL(url);
             java.net.HttpURLConnection conn = (java.net.HttpURLConnection) requestUrl.openConnection();
@@ -47,10 +47,7 @@ public class DebugerInvocationHandler implements MethodInterceptor {
             // 设置请求方法和请求头
             conn.setRequestMethod("POST");
             conn.setRequestProperty("Content-Type", "application/octet-stream");
-            conn.setRequestProperty("Authorization", "Bearer " + password);
             conn.setRequestProperty("Content-Length", String.valueOf(data.length));
-            conn.setRequestProperty("X-Bean-Name", beanName);
-            conn.setRequestProperty("X-Method-Name", methodName);
             conn.setDoOutput(true);
             conn.setConnectTimeout(5000);
             conn.setReadTimeout(30000);
@@ -94,18 +91,55 @@ public class DebugerInvocationHandler implements MethodInterceptor {
         if(debugerConfig.getPassword() == null || debugerConfig.getPassword().trim().isEmpty()) {
             throw new UnsupportedOperationException("debuger.password is empty");
         }
-        byte[] bytes = ProtoStuffUtil.serialize(invocation.getArguments());
-        String url = debugerConfig.getUrl();
-        String methodName = invocation.getMethod().getName();
         
-        // bytes数据通过http post请求发送到url地址获取结果
-        byte[] responseBytes = sendHttpRequest(url, bytes, debugerConfig.getPassword(), methodName);
+        // 创建DebugRequest对象，包含所有必要信息
+        DebugRequest request = new DebugRequest(
+            beanName,
+            invocation.getMethod().getName(),
+            invocation.getArguments(),
+            debugerConfig.getPassword()
+        );
+        
+        // 序列化请求对象
+        byte[] bytes = ProtoStuffUtil.serialize(request);
+        String url = debugerConfig.getUrl();
+        
+        logger.info("发送调试请求: {}", request);
+        
+        // 发送HTTP请求
+        byte[] responseBytes = sendHttpRequest(url, bytes);
         
         // 反序列化响应结果
         if (responseBytes != null && responseBytes.length > 0) {
-            return ProtoStuffUtil.deserialize(responseBytes, invocation.getMethod().getReturnType());
+            DebugResponse response = ProtoStuffUtil.deserialize(responseBytes, DebugResponse.class);
+            
+            if (response.isSuccess()) {
+                // 调用成功，返回结果
+                logger.info("调试响应成功: 执行时间={}ms", response.getExecutionTime());
+                return response.getResult();
+            } else {
+                // 调用失败，抛出异常
+                logger.error("调试响应失败: {} - {}", response.getExceptionClass(), response.getErrorMessage());
+                // 尝试根据异常类名创建并抛出异常
+                if (response.getExceptionClass() != null) {
+                    try {
+                        Class<?> exceptionClass = Class.forName(response.getExceptionClass());
+                        if (Throwable.class.isAssignableFrom(exceptionClass)) {
+                            Throwable exception = (Throwable) exceptionClass.getDeclaredConstructor(String.class).newInstance(
+                                response.getErrorMessage());
+                            throw exception;
+                        }
+                    } catch (Exception e) {
+                        // 如果无法创建指定异常类，则抛出通用异常
+                        throw new RuntimeException(response.getErrorMessage());
+                    }
+                } else {
+                    throw new RuntimeException(response.getErrorMessage());
+                }
+            }
         }
         
+        logger.warn("未收到调试响应，执行本地方法");
         return invocation.proceed();
     }
     
