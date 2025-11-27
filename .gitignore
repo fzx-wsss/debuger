@@ -1,16 +1,44 @@
-# Compiled class file
-*.class
+# 编译输出目录
+/target/
+/build/
+/out/
 
-# Log file
+# IDE配置文件
+.idea/
+.classpath
+.project
+.settings/
+.vscode/
+*.swp
+*.swo
+*~
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 日志文件
 *.log
+logs/
 
-# BlueJ files
-*.ctxt
+# Maven本地仓库
+/.m2/
 
-# Mobile Tools for Java (J2ME)
-.mtj.tmp/
+# 环境变量文件
+.env
+.env.local
+.env.*.local
 
-# Package Files #
+# 测试覆盖率文件
+/coverage/
+.nyc_output/
+
+# 临时文件
+*.tmp
+*.temp
+.cache/
+
+# 打包文件
 *.jar
 *.war
 *.nar
@@ -19,6 +47,17 @@
 *.tar.gz
 *.rar
 
-# virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
-hs_err_pid*
-replay_pid*
+# 敏感信息文件
+*.pem
+*.key
+*.cert
+*.gpg
+
+# OS生成的文件
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
